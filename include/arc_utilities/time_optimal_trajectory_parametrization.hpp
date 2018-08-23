@@ -167,7 +167,7 @@ private:
   std::list<TrajectoryStep> trajectory_;
 
   static const double eps;
-  const double time_step_;
+  double time_step_;
 
   mutable double cached_time_;
   mutable std::list<TrajectoryStep>::const_iterator cached_trajectory_segment_;
