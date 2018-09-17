@@ -8,7 +8,51 @@ namespace shortcut_smoothing
 {
 template<typename Configuration,
          typename ConfigAlloc=std::allocator<Configuration>>
-std::vector<Configuration, ConfigAlloc> SingleShortcutAction(
+double ComputePercentCollisionFree(
+  const std::vector<Configuration, ConfigAlloc>& path,
+  const std::function<bool(const Configuration&,
+                           const Configuration&)>& edge_validity_check_fn)
+{
+  if (path.size() >= 2)
+  {
+    const size_t num_edges = path.size() - 1;
+    size_t collision_free_edges = 0;
+    for (size_t idx = 1; idx < path.size(); idx++)
+    {
+      const Configuration& q1 = path[idx - 1];
+      const Configuration& q2 = path[idx];
+      const bool edge_valid = edge_validity_check_fn(q1, q2);
+      if (edge_valid)
+      {
+        collision_free_edges += 1;
+      }
+      else
+      {
+        break;
+      }
+    }
+    return (double)collision_free_edges / (double)num_edges;
+  }
+  else if (path.size() == 1)
+  {
+    if (edge_validity_check_fn(path.front(), path.front()))
+    {
+      return 1.0;
+    }
+    else
+    {
+      return 0.0;
+    }
+  }
+  else
+  {
+    return 1.0;
+  }
+}
+
+template<typename Configuration,
+         typename ConfigAlloc=std::allocator<Configuration>>
+std::vector<Configuration, ConfigAlloc> AttemptShortcut(
     const std::vector<Configuration, ConfigAlloc>& current_path,
     const size_t start_index,
     const size_t end_index,
@@ -32,12 +76,10 @@ std::vector<Configuration, ConfigAlloc> SingleShortcutAction(
   const bool edge_valid = edge_validity_check_fn(start_config, end_config);
   if (edge_valid)
   {
-    // Make the shortened path
-    std::vector<Configuration, ConfigAlloc> shortened_path;
-    // Copy start->shortcut
-    shortened_path.insert(shortened_path.end(),
-                          current_path.begin(),
-                          current_path.begin() + start_index + 1);
+    // Make the shortcut
+    std::vector<Configuration, ConfigAlloc> shortcut;
+    // Copy the start config
+    shortcut.emplace_back(start_config);
     // Insert resampled states in the shortcut if needed
     if (resample_shortcuts_interval > 0.0)
     {
@@ -48,68 +90,87 @@ std::vector<Configuration, ConfigAlloc> SingleShortcutAction(
       {
         const double interpolation_ratio
             = (double)segment / (double)num_segments;
-        shortened_path.emplace_back(
+        shortcut.emplace_back(
             state_interpolation_fn(start_config, end_config,
                                    interpolation_ratio));
       }
     }
-    // Copy shortcut->end
-    shortened_path.insert(shortened_path.end(),
-                          current_path.begin() + end_index,
-                          current_path.end());
-    return shortened_path;
-  }
-  else
-  {
-    if (remaining_backtracking_steps > 0)
+    // Copy end config
+    shortcut.emplace_back(end_config);
+    // Check if this was a marginal path that could clip obstacles
+    if (shortcut.size() <= 2 ||
+        ComputePercentCollisionFree(shortcut, edge_validity_check_fn) == 1.0)
     {
-      const size_t window = end_index - start_index;
-      if (window >= 2)
-      {
-        const size_t half_window = window / 2;
-        const size_t middle_index = start_index + half_window;
-        // Attempt to shortcut each half independently
-        const uint32_t available_backtracking_steps
-            = remaining_backtracking_steps - 1;
-        const auto first_half_shortcut_path
-            = SingleShortcutAction(current_path, start_index, middle_index,
-                                   available_backtracking_steps,
-                                   resample_shortcuts_interval,
-                                   edge_validity_check_fn, state_distance_fn,
-                                   state_interpolation_fn);
-        if (first_half_shortcut_path.size() > 0)
-        {
-          const auto second_half_shortcut_path
-              = SingleShortcutAction(first_half_shortcut_path, middle_index,
-                                     end_index, available_backtracking_steps,
-                                     resample_shortcuts_interval,
-                                     edge_validity_check_fn, state_distance_fn,
-                                     state_interpolation_fn);
-          if (second_half_shortcut_path.size() > 0)
-          {
-            return second_half_shortcut_path;
-          }
-          else
-          {
-            return first_half_shortcut_path;
-          }
-        }
-        else
-        {
-          return SingleShortcutAction(current_path, middle_index, end_index,
-                                      available_backtracking_steps,
-                                      resample_shortcuts_interval,
-                                      edge_validity_check_fn, state_distance_fn,
-                                      state_interpolation_fn);
-        }
-      }
-      else
-      {
-        std::cerr << "Window size < 2, cannot backtrack" << std::endl;
-      }
+      return shortcut;
     }
-    return std::vector<Configuration, ConfigAlloc>();
   }
+  // If we haven't already returned, the single shortcut has failed
+  if (remaining_backtracking_steps > 0)
+  {
+    const size_t window = end_index - start_index;
+    if (window >= 2)
+    {
+      const size_t half_window = window / 2;
+      const size_t middle_index = start_index + half_window;
+      // Attempt to shortcut each half independently
+      const uint32_t available_backtracking_steps
+          = remaining_backtracking_steps - 1;
+      const auto first_half_shortcut
+          = AttemptShortcut(current_path, start_index, middle_index,
+                            available_backtracking_steps,
+                            resample_shortcuts_interval,
+                            edge_validity_check_fn, state_distance_fn,
+                            state_interpolation_fn);
+      const auto second_half_shortcut
+          = AttemptShortcut(current_path, middle_index, end_index,
+                            available_backtracking_steps,
+                            resample_shortcuts_interval,
+                            edge_validity_check_fn, state_distance_fn,
+                            state_interpolation_fn);
+      std::vector<Configuration, ConfigAlloc> shortcut;
+      if (first_half_shortcut.size() > 0 && second_half_shortcut.size() > 0)
+      {
+        shortcut.insert(shortcut.end(),
+                        first_half_shortcut.begin(),
+                        first_half_shortcut.end());
+        // Skip the first configuration, since this is a duplicate of the last
+        // configuration in the first half shortcut
+        shortcut.insert(shortcut.end(),
+                        second_half_shortcut.begin() + 1,
+                        second_half_shortcut.end());
+      }
+      else if (first_half_shortcut.size() > 0)
+      {
+        shortcut.insert(shortcut.end(),
+                        first_half_shortcut.begin(),
+                        first_half_shortcut.end());
+        // Skip the middle configuration, since this is a duplicate of the
+        // last configuration in the first half shortcut, but include the end
+        // index
+        shortcut.insert(shortcut.end(),
+                        current_path.begin() + middle_index + 1,
+                        current_path.begin() + end_index + 1);
+      }
+      else if (second_half_shortcut.size() > 0)
+      {
+        // Skip the middle configuration, since this is a duplicate of the
+        // first configuration in the second half shortcut
+        shortcut.insert(shortcut.end(),
+                        current_path.begin() + start_index,
+                        current_path.begin() + middle_index);
+        shortcut.insert(shortcut.end(),
+                        second_half_shortcut.begin(),
+                        second_half_shortcut.end());
+      }
+      return shortcut;
+    }
+    else
+    {
+      std::cerr << "Window size < 2, cannot backtrack" << std::endl;
+    }
+  }
+  // If we get here, the shortcut failed and we return an empty shortcut path
+  return std::vector<Configuration, ConfigAlloc>();
 }
 
 template<typename PRNG, typename Configuration,
@@ -161,15 +222,31 @@ std::vector<Configuration, ConfigAlloc> ShortcutSmoothPath(
     {
       continue;
     }
-    const auto shortcut_path
-        = SingleShortcutAction(current_path, start_index, end_index,
-                               max_backtracking_steps,
-                               resample_shortcuts_interval,
-                               edge_validity_check_fn, state_distance_fn,
-                               state_interpolation_fn);
-    if (shortcut_path.size() > 0)
+    const auto shortcut = AttemptShortcut(current_path, start_index, end_index,
+                                          max_backtracking_steps,
+                                          resample_shortcuts_interval,
+                                          edge_validity_check_fn,
+                                          state_distance_fn,
+                                          state_interpolation_fn);
+    // An empty shortcut means it failed, since the shortcut must include the
+    // start and end configurations
+    if (shortcut.size() > 0)
     {
-      current_path = shortcut_path;
+      std::vector<Configuration, ConfigAlloc> shortened_path;
+      // Copy the path before the shortcut (excluding start_index)
+      shortened_path.insert(shortened_path.end(),
+                            current_path.begin(),
+                            current_path.begin() + start_index);
+      // Copy the shortcut
+      shortened_path.insert(shortened_path.end(),
+                            shortcut.begin(),
+                            shortcut.end());
+      // Copy the path after the shortcut (excluding end_index)
+      shortened_path.insert(shortened_path.end(),
+                            current_path.begin() + end_index + 1,
+                            current_path.end());
+      // Swap in as the new current path
+      current_path = shortened_path;
     }
     else
     {
