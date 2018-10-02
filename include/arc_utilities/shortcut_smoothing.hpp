@@ -242,18 +242,24 @@ std::vector<Configuration, ConfigAlloc> ShortcutSmoothPath(
     if (shortcut.size() > 0)
     {
       std::vector<Configuration, ConfigAlloc> shortened_path;
-      // Copy the path before the shortcut (excluding start_index)
-      shortened_path.insert(shortened_path.end(),
-                            current_path.begin(),
-                            current_path.begin() + start_index);
+      if (start_index > 0)
+      {
+        // Copy the path before the shortcut (excluding start_index)
+        shortened_path.insert(shortened_path.end(),
+                              current_path.begin(),
+                              current_path.begin() + start_index);
+      }
       // Copy the shortcut
       shortened_path.insert(shortened_path.end(),
                             shortcut.begin(),
                             shortcut.end());
-      // Copy the path after the shortcut (excluding end_index)
-      shortened_path.insert(shortened_path.end(),
-                            current_path.begin() + end_index + 1,
-                            current_path.end());
+      if (end_index < current_path.size() - 1)
+      {
+        // Copy the path after the shortcut (excluding end_index)
+        shortened_path.insert(shortened_path.end(),
+                              current_path.begin() + end_index + 1,
+                              current_path.end());
+      }
       // Swap in as the new current path
       current_path = shortened_path;
     }
